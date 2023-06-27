@@ -1,0 +1,32 @@
+# Azure Synapse Analytics Synapse Link / Cosmos DB / Unexpected query results 
+
+## Learn about Azure Synapse Link for Azure Cosmos DB 
+
+Learn about Azure Synapse Link, including supported APIs, the analytical store, configuring customer managed keys, and more.
+
+### **Supported APIs**  
+Currently, Azure Synapse Link for Azure Cosmos DB is supported for SQL API and Azure Cosmos DB API for MongoDB. It is not supported for Gremlin API and Table API. Support for Cassandra API is in private preview. For more information, contact the Azure Synapse Link team at cosmosdbsynapselink@microsoft.com.  
+
+### Why do I see NULL values in Cosmos DB Analytical store query results when they have valid values in their transactional store documents?
+Below are some valid use cases in which you will see NULL values in Cosmos DB analytical store documents where they have values in their transactional store documents.
+
+- #### Property limits hit
+Cosmos DB analytical store has a default property limit of 1000 properties. The first 1000 properties that analytical store sees, across documents, are what will be replicated from transactional store. Any properties introduced into analytical store beyond the first 1000 properties will be replicated as NULL values. Cosmos DB analytical store also has a maximum property depth limit of 127. Any nested properties beyond a nested depth of 127 in the document tree will be replicated with a NULL value as well. Refer to the following link for more information: <a href="https://docs.microsoft.com/azure/cosmos-db/analytical-store-introduction#schema-constraints">https://docs.microsoft.com/azure/cosmos-db/analytical-store-introduction#schema-constraints</a>. <b>The property limit can be increased on a per-account basis by creating a support request.</b>
+
+Also note, that the schema in analytical store is additive, meaning that newly introduced properties are added to a container-wide schema and are never removed. Even if a property has been introduced but has subsequently been removed from all documents, that property will remain in the analytical store schema for the life of the container.  As such, containers that have a lot of inter-document variations may have large analytical store schemas.  For example, a common pattern will be to use a single container to store documents with disparate schemas where a document 'type' will be defined in a common property.  For containers like this, the schema for the container in analytical store will be the union of all schemas in the container.  Scenarios like this can cause the 1000 property limit to be reached rather quickly and result in NULL values being replicated unexpectedly.  One solution to reduce the schema variance in this example would be to introduce multiple containers for the different documents 'types'.  
+
+
+- #### Property type changes
+Cosmos DB analytical store does not share the same schema flexibility as its transactional store.  Where properties in transactional store can change type between documents seamlessly, once a property is introduced to analytical store with a particular type, that property type cannot change for the lifetime of the container.  Any type changes to that particular property will result in NULL values being replicated to analytical store.  Because of this, it's easy to introduce a type change without realizing and have NULL values in analytical store unexpectedly.  If type changes need to occur for a container after data has been ingested into
+analytical store, a new container will need to be created and the documents will need to be re-ingested into this new container.  If the property change is still reflected in the transactional store (meaning the container has documents where a particular property has different types between documents), a simple check could be to run a SQL query that counts the number of documents where a property is of a certain type. For example, if the property 'someProperty' has changed from type 'string' to type 'object', the following SQL queries could be run from the Cosmos DB Data Explorer:
+
+SELECT COUNT(c.id) FROM c WHERE IS_STRING(c.someProperty)
+SELECT COUNT(c.id) FROM c WHERE IS_OBJECT(c.someProperty)
+
+If 'someProperty' is a 'string' in some documents but an 'object' in others, both queries above will return a non-zero result. Refer to the following link for more information about type-checking functions in Cosmos DB: <a href="https://docs.microsoft.com/azure/cosmos-db/sql/sql-query-type-checking-functions">https://docs.microsoft.com/azure/cosmos-db/sql/sql-query-type-checking-functions</a>. Note that if all documents that have 'someProperty' as a 'string' type in the above example have been deleted, then this method of checking for a type change won't indicate that a type change has occurred and a support request may need to be created to help determine the issue.
+
+> Note that if a property type changes from only NULL values to a non-NULL value, the type for that property will be changed from a NULL type to the type of the non-NULL value.
+
+- #### Incorrect T-SQL queries
+<b>Note that this section only applies to Azure Synapse queries made from SQL Serverless and does not apply to queries made from Spark.</b><br>
+When using an OPENROWSET to query Cosmos DB analytical store from Azure Synapse, sometimes a NULL value can be displayed if the query is incorrect.  When using a WITH clause to manually specify a schema for the query, fields that don't have a corresponding name to properties an analytical store document may show as NULL in the result set.  Considering that nested objects in analytical store will be converted to a JSON value in Synapse, it's possible that the JSON selector in the WITH clause could be specified incorrectly and result in a NULL in the result set as well. Make sure that all fields within the WITH clause are either spelled correctly or their JSON selector string refers to an existing property in the converted JSON value. Refer to the following link for more information about parsing JSON fields in T-SQL: <a href="https://docs.microsoft.com/sql/relational-databases/json/json-data-sql-server?view=sql-server-ver16">https://docs.microsoft.com/sql/relational-databases/json/json-data-sql-server?view=sql-server-ver16</a>.
